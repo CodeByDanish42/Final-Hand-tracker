@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Fast Mobile Voxel Editor</title>
+<style>
+body { margin:0; overflow:hidden; background:#111; }
+video {
+  position: fixed;
+  bottom: 10px;
+  right: 10px;
+  width: 160px;
+  height: auto;
+  border-radius: 8px;
+  opacity: 0.8;
+  z-index: 10;
+}
+button {
+  position: fixed;
+  top:50%;
+  left:50%;
+  transform:translate(-50%,-50%);
+  padding:16px 24px;
+  font-size:18px;
+  z-index:20;
+}
+#cursor {
+  position: fixed;
+  width: 20px;
+  height: 20px;
+  background: red;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 15;
+  transform: translate(-50%, -50%);
+}
+</style>
+</head>
+<body>
+
+<video id="video" autoplay muted playsinline webkit-playsinline></video>
+<div id="cursor"></div>
+<button id="startBtn">Start Camera</button>
+
+<!-- MEDIAPIPE -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<!-- THREE.JS -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.156.0/build/three.min.js"></script>
+
+<script>
+/* ===== THREE.JS SETUP ===== */
+const scene = new THREE.Scene();
+const camera3D = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+camera3D.position.set(0,6,14);
+
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0x404040));
+const light = new THREE.DirectionalLight(0xffffff,1);
+light.position.set(10,20,10);
+scene.add(light);
+
+scene.add(new THREE.GridHelper(20,20));
+
+/* ===== VOXELS ===== */
+const voxels = {};
+const voxelSize = 0.8;
+const MAX_VOXELS = 500; // more voxels for faster feel
+
+// Pre-created colors
+const colors = [0x00ff00,0x00ffff,0xff00ff,0xffff00,0xff6600];
+let colorIndex = 0;
+
+function addVoxel(x,y,z){
+  const key = `${x},${y},${z}`;
+  if(voxels[key]) return;
+
+  if(Object.keys(voxels).length > MAX_VOXELS){
+    const firstKey = Object.keys(voxels)[0];
+    scene.remove(voxels[firstKey]);
+    delete voxels[firstKey];
+  }
+
+  const geo = new THREE.BoxGeometry(voxelSize, voxelSize, voxelSize);
+  const mat = new THREE.MeshStandardMaterial({color: colors[colorIndex]});
+  colorIndex = (colorIndex+1)%colors.length;
+  const cube = new THREE.Mesh(geo, mat);
+  cube.position.set(x,y,z);
+  scene.add(cube);
+  voxels[key] = cube;
+}
+
+function removeVoxel(x,y,z){
+  const key = `${x},${y},${z}`;
+  if(!voxels[key]) return;
+  scene.remove(voxels[key]);
+  delete voxels[key];
+}
+
+/* ===== MEDIAPIPE HANDS ===== */
+const video = document.getElementById("video");
+const cursor = document.getElementById("cursor");
+let smoothX=0, smoothY=0;
+let lastVoxel = null;
+let frameCount = 0;
+
+const hands = new Hands({
+  locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+hands.setOptions({
+  maxNumHands:1,
+  modelComplexity:1,
+  minDetectionConfidence:0.7,
+  minTrackingConfidence:0.7
+});
+
+function distance(a,b){
+  const dx = a.x-b.x;
+  const dy = a.y-b.y;
+  const dz = (a.z||0)-(b.z||0);
+  return Math.sqrt(dx*dx+dy*dy+dz*dz);
+}
+
+hands.onResults(results=>{
+  if(!results.multiHandLandmarks || results.multiHandLandmarks.length===0) {
+    cursor.style.display="none";
+    lastVoxel=null;
+    return;
+  }
+
+  cursor.style.display="block";
+  const lm = results.multiHandLandmarks[0];
+  const index = lm[8];
+  const thumb = lm[4];
+
+  const pinch = distance(index,thumb)<0.08;
+
+  // Cursor position (screen)
+  const screenX = window.innerWidth * index.x;
+  const screenY = window.innerHeight * index.y;
+  smoothX += (screenX - smoothX)*0.3;
+  smoothY += (screenY - smoothY)*0.3;
+  cursor.style.left = smoothX+"px";
+  cursor.style.top = smoothY+"px";
+
+  // Voxel position
+  const vx = Math.round((index.x-0.5)*20);
+  const vy = Math.round((1-index.y)*10);
+  const vz = -5;
+
+  if(pinch){
+    if(!lastVoxel || lastVoxel.x!==vx || lastVoxel.y!==vy){
+      addVoxel(vx,vy,vz);
+      lastVoxel={x:vx,y:vy};
+    }
+  } else {
+    removeVoxel(vx,vy,vz);
+    lastVoxel=null;
+  }
+});
+
+/* ===== CAMERA ===== */
+const cam = new Camera(video,{
+  onFrame: async()=>{await hands.send({image:video});},
+  width:1280,
+  height:720
+});
+
+document.getElementById("startBtn").onclick = () => {
+  cam.start();
+  document.getElementById("startBtn").style.display="none";
+};
+
+/* ===== ANIMATE ===== */
+function animate(){
+  requestAnimationFrame(animate);
+  renderer.render(scene,camera3D);
+}
+animate();
+
+window.addEventListener('resize',()=>{
+  camera3D.aspect = window.innerWidth/window.innerHeight;
+  camera3D.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
